@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Realtime Chatroom</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <!-- Display Name Modal -->
+    <div id="displayNameModal" class="modal">
+      <div class="modal-content">
+        <h2>Welcome to the Chatroom</h2>
+        <p>Please enter your display name to join the conversation:</p>
+        <form id="displayNameForm">
+          <input
+            type="text"
+            id="displayNameInput"
+            placeholder="Enter your display name..."
+            maxlength="50"
+            required
+          />
+          <div id="displayNameError" class="error-message"></div>
+          <button type="submit" id="joinButton">Join Chat</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Main Chat Interface -->
+    <div id="chatContainer" class="chat-container">
+      <!-- Header -->
+      <div class="header">
+        <h1>Realtime Chatroom</h1>
+        <div class="connection-status">
+          <div id="statusIndicator" class="status-indicator connecting"></div>
+          <span id="statusText">Connecting...</span>
+        </div>
+      </div>
+
+      <!-- Error Display Area -->
+      <div id="errorDisplay" class="error-display"></div>
+
+      <!-- Main Content -->
+      <div class="main-content">
+        <!-- Chat Section -->
+        <div class="chat-section">
+          <!-- Messages Container -->
+          <div id="messagesContainer" class="messages-container">
+            <!-- Messages will be dynamically added here -->
+          </div>
+
+          <!-- Message Input Section -->
+          <div class="input-section">
+            <form id="messageForm" class="input-form">
+              <input
+                type="text"
+                id="messageInput"
+                class="message-input"
+                placeholder="Type your message..."
+                maxlength="1000"
+                disabled
+              />
+              <button
+                type="submit"
+                id="sendButton"
+                class="send-button"
+                disabled
+              >
+                Send
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <!-- Users Sidebar -->
+        <div class="users-sidebar">
+          <div class="users-header">
+            <h3>Online Users</h3>
+            <div id="usersCount" class="users-count">0 users online</div>
+          </div>
+          <div id="usersList" class="users-list">
+            <!-- Online users will be dynamically added here -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Global variables
+      let ws = null;
+      let displayName = "";
+      let isConnected = false;
+      let reconnectAttempts = 0;
+      const maxReconnectAttempts = 10;
+      let reconnectTimeout = null;
+      let connectionAttempts = 0;
+      let lastConnectionTime = null;
+
+      // DOM elements
+      const displayNameModal = document.getElementById("displayNameModal");
+      const chatContainer = document.getElementById("chatContainer");
+      const displayNameForm = document.getElementById("displayNameForm");
+      const displayNameInput = document.getElementById("displayNameInput");
+      const displayNameError = document.getElementById("displayNameError");
+      const joinButton = document.getElementById("joinButton");
+      const messagesContainer = document.getElementById("messagesContainer");
+      const messageForm = document.getElementById("messageForm");
+      const messageInput = document.getElementById("messageInput");
+      const sendButton = document.getElementById("sendButton");
+      const usersList = document.getElementById("usersList");
+      const usersCount = document.getElementById("usersCount");
+      const statusIndicator = document.getElementById("statusIndicator");
+      const statusText = document.getElementById("statusText");
+      const errorDisplay = document.getElementById("errorDisplay");
+
+      // Initialize the application
+      document.addEventListener("DOMContentLoaded", function () {
+        setupEventListeners();
+        startConnectionHealthCheck();
+        displayNameInput.focus();
+      });
+
+      // Setup event listeners
+      function setupEventListeners() {
+        // Display name form submission
+        displayNameForm.addEventListener("submit", handleDisplayNameSubmit);
+
+        // Real-time display name validation
+        displayNameInput.addEventListener("input", validateDisplayName);
+
+        // Message form submission
+        messageForm.addEventListener("submit", handleMessageSubmit);
+
+        // Enter key support for message input
+        messageInput.addEventListener("keypress", function (e) {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            handleMessageSubmit(e);
+          }
+        });
+
+        // Real-time message validation
+        messageInput.addEventListener("input", validateMessage);
+      }
+
+      // Handle display name form submission
+      function handleDisplayNameSubmit(e) {
+        e.preventDefault();
+
+        const name = displayNameInput.value.trim();
+        if (!validateDisplayNameInput(name)) {
+          return;
+        }
+
+        displayName = name;
+        joinButton.disabled = true;
+        joinButton.textContent = "Joining...";
+
+        // Hide modal and show chat interface
+        displayNameModal.style.display = "none";
+        chatContainer.style.display = "flex";
+
+        // Connect to WebSocket
+        connectWebSocket();
+      }
+
+      // Validate display name input with enhanced validation
+      function validateDisplayNameInput(name) {
+        displayNameError.textContent = "";
+
+        if (!name) {
+          displayNameError.textContent = "Display name cannot be empty";
+          return false;
+        }
+
+        if (name.length > 50) {
+          displayNameError.textContent =
+            "Display name must be 50 characters or less";
+          return false;
+        }
+
+        // Check for HTML tags
+        if (/<[^>]*>/i.test(name)) {
+          displayNameError.textContent =
+            "Display name cannot contain HTML tags";
+          return false;
+        }
+
+        // Check for control characters (except normal whitespace)
+        for (let i = 0; i < name.length; i++) {
+          const charCode = name.charCodeAt(i);
+          if (
+            charCode < 32 &&
+            charCode !== 9 &&
+            charCode !== 10 &&
+            charCode !== 13
+          ) {
+            displayNameError.textContent =
+              "Display name contains invalid characters";
+            return false;
+          }
+        }
+
+        // Check for script injection patterns
+        if (/script|javascript|vbscript|onload|onerror|onclick/i.test(name)) {
+          displayNameError.textContent =
+            "Display name contains prohibited content";
+          return false;
+        }
+
+        return true;
+      }
+
+      // Real-time display name validation with enhanced checks
+      function validateDisplayName() {
+        const name = displayNameInput.value.trim();
+        const isValid = validateDisplayNameInput(name);
+
+        joinButton.disabled = !name || !isValid;
+
+        // Only show error if there's input to validate
+        if (name && !isValid) {
+          // Error message is already set by validateDisplayNameInput
+        } else if (!name) {
+          displayNameError.textContent = "";
+        } else {
+          displayNameError.textContent = "";
+        }
+      }
+
+      // Handle message form submission with enhanced validation and error handling
+      function handleMessageSubmit(e) {
+        e.preventDefault();
+
+        const content = messageInput.value.trim();
+
+        // Enhanced message validation
+        if (!validateMessageContent(content)) {
+          return; // Error message already shown by validation function
+        }
+
+        if (!isConnected) {
+          showError("Not connected to server - cannot send message");
+          return;
+        }
+
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          showError("Connection not ready - please wait");
+          return;
+        }
+
+        try {
+          const message = {
+            type: "chat",
+            from: displayName,
+            content: sanitizeInput(content),
+            timestamp: new Date().toISOString(),
+          };
+
+          ws.send(JSON.stringify(message));
+          messageInput.value = "";
+          validateMessage();
+          hideError(); // Clear any previous errors on successful send
+        } catch (error) {
+          console.error("Failed to send message:", error);
+          showError(`Failed to send message: ${error.message}`);
+        }
+      }
+
+      // Validate message content with enhanced checks
+      function validateMessageContent(content) {
+        if (!content) {
+          showError("Cannot send empty message");
+          return false;
+        }
+
+        if (content.length > 1000) {
+          showError("Message too long (maximum 1000 characters)");
+          return false;
+        }
+
+        // Check for script injection patterns
+        if (
+          /script|javascript|vbscript|onload|onerror|onclick/i.test(content)
+        ) {
+          showError("Message contains prohibited content");
+          return false;
+        }
+
+        return true;
+      }
+
+      // Sanitize input to prevent XSS attacks
+      function sanitizeInput(input) {
+        // Create a temporary div element to escape HTML
+        const div = document.createElement("div");
+        div.textContent = input;
+        return div.innerHTML;
+      }
+
+      // Real-time message validation with enhanced checks
+      function validateMessage() {
+        const content = messageInput.value.trim();
+        const isValidLength = content.length <= 1000;
+        const hasProhibitedContent =
+          /script|javascript|vbscript|onload|onerror|onclick/i.test(content);
+
+        sendButton.disabled =
+          !content || !isConnected || !isValidLength || hasProhibitedContent;
+
+        // Update UI to show validation status
+        if (content && !isValidLength) {
+          messageInput.style.borderColor = "#ff4444";
+          messageInput.title = "Message too long (maximum 1000 characters)";
+        } else if (content && hasProhibitedContent) {
+          messageInput.style.borderColor = "#ff4444";
+          messageInput.title = "Message contains prohibited content";
+        } else {
+          messageInput.style.borderColor = "";
+          messageInput.title = "";
+        }
+      }
+
+      // Connect to WebSocket with enhanced error handling
+      function connectWebSocket() {
+        // Clear any existing reconnect timeout
+        if (reconnectTimeout) {
+          clearTimeout(reconnectTimeout);
+          reconnectTimeout = null;
+        }
+
+        connectionAttempts++;
+        updateConnectionStatus(
+          "connecting",
+          `Connecting... (attempt ${connectionAttempts})`
+        );
+
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+        try {
+          // Close existing connection if any
+          if (ws && ws.readyState !== WebSocket.CLOSED) {
+            ws.close();
+          }
+
+          ws = new WebSocket(wsUrl);
+
+          // Set connection timeout
+          const connectionTimeout = setTimeout(() => {
+            if (ws.readyState === WebSocket.CONNECTING) {
+              ws.close();
+              handleConnectionTimeout();
+            }
+          }, 10000); // 10 second timeout
+
+          ws.onopen = function (event) {
+            clearTimeout(connectionTimeout);
+            handleWebSocketOpen(event);
+          };
+
+          ws.onmessage = handleWebSocketMessage;
+          ws.onclose = handleWebSocketClose;
+          ws.onerror = handleWebSocketError;
+        } catch (error) {
+          console.error("WebSocket connection error:", error);
+          showError(`Failed to connect to chat server: ${error.message}`);
+          updateConnectionStatus("disconnected", "Connection failed");
+          scheduleReconnect();
+        }
+      }
+
+      // Handle connection timeout
+      function handleConnectionTimeout() {
+        console.error("WebSocket connection timeout");
+        showError("Connection timeout - server may be unavailable");
+        updateConnectionStatus("disconnected", "Connection timeout");
+        scheduleReconnect();
+      }
+
+      // Handle WebSocket connection open
+      function handleWebSocketOpen(event) {
+        console.log("WebSocket connected successfully");
+        isConnected = true;
+        reconnectAttempts = 0;
+        connectionAttempts = 0;
+        lastConnectionTime = new Date();
+        updateConnectionStatus("connected", "Connected");
+        hideError();
+
+        // Enable message input
+        messageInput.disabled = false;
+        messageInput.focus();
+        validateMessage();
+
+        // Send join message with error handling
+        try {
+          const joinMessage = {
+            type: "join",
+            from: displayName,
+            content: displayName,
+            timestamp: new Date().toISOString(),
+          };
+
+          ws.send(JSON.stringify(joinMessage));
+          console.log("Join message sent successfully");
+        } catch (error) {
+          console.error("Failed to send join message:", error);
+          showError("Failed to join chat - please refresh the page");
+        }
+      }
+
+      // Handle incoming WebSocket messages with enhanced error handling
+      function handleWebSocketMessage(event) {
+        try {
+          // Validate that we received data
+          if (!event.data) {
+            console.warn("Received empty message from server");
+            return;
+          }
+
+          const message = JSON.parse(event.data);
+
+          // Validate message structure
+          if (!message.type) {
+            console.warn("Received message without type field:", message);
+            showError("Received malformed message from server");
+            return;
+          }
+
+          switch (message.type) {
+            case "chat":
+              if (message.from && message.content) {
+                displayChatMessage(message);
+              } else {
+                console.warn("Invalid chat message structure:", message);
+              }
+              break;
+            case "system":
+              if (message.content) {
+                displaySystemMessage(message);
+              } else {
+                console.warn("Invalid system message structure:", message);
+              }
+              break;
+            case "user_list":
+              if (Array.isArray(message.users)) {
+                updateUsersList(message.users);
+              } else {
+                console.warn("Invalid user_list message structure:", message);
+              }
+              break;
+            case "error":
+              if (message.error) {
+                showError(`Server error: ${message.error}`);
+              } else {
+                showError("Unknown server error occurred");
+              }
+              break;
+            default:
+              console.warn("Unknown message type:", message.type);
+              showError(`Received unknown message type: ${message.type}`);
+          }
+        } catch (error) {
+          console.error(
+            "Error parsing message:",
+            error,
+            "Raw data:",
+            event.data
+          );
+          showError(`Failed to parse server message: ${error.message}`);
+        }
+      }
+
+      // Handle WebSocket connection close with enhanced reconnection logic
+      function handleWebSocketClose(event) {
+        console.log("WebSocket disconnected:", event.code, event.reason);
+        isConnected = false;
+
+        // Disable message input
+        messageInput.disabled = true;
+        sendButton.disabled = true;
+
+        // Determine if this was an expected close or error
+        const wasCleanClose = event.code === 1000 || event.code === 1001;
+        const closeReason = getCloseReason(event.code);
+
+        if (wasCleanClose) {
+          updateConnectionStatus(
+            "disconnected",
+            `Disconnected: ${closeReason}`
+          );
+          showError("Connection closed by server");
+        } else {
+          updateConnectionStatus(
+            "disconnected",
+            `Connection lost: ${closeReason}`
+          );
+          scheduleReconnect();
+        }
+      }
+
+      // Get human-readable close reason
+      function getCloseReason(code) {
+        switch (code) {
+          case 1000:
+            return "Normal closure";
+          case 1001:
+            return "Going away";
+          case 1002:
+            return "Protocol error";
+          case 1003:
+            return "Unsupported data";
+          case 1006:
+            return "Abnormal closure";
+          case 1007:
+            return "Invalid data";
+          case 1008:
+            return "Policy violation";
+          case 1009:
+            return "Message too big";
+          case 1011:
+            return "Server error";
+          default:
+            return `Unknown (${code})`;
+        }
+      }
+
+      // Schedule reconnection with exponential backoff
+      function scheduleReconnect() {
+        if (reconnectAttempts >= maxReconnectAttempts) {
+          showError(
+            "Maximum reconnection attempts reached. Please refresh the page."
+          );
+          updateConnectionStatus(
+            "disconnected",
+            "Connection failed permanently"
+          );
+          return;
+        }
+
+        // Calculate delay with exponential backoff (max 30 seconds)
+        const baseDelay = 1000; // 1 second
+        const delay = Math.min(
+          baseDelay * Math.pow(2, reconnectAttempts),
+          30000
+        );
+        reconnectAttempts++;
+
+        updateConnectionStatus(
+          "connecting",
+          `Reconnecting in ${Math.ceil(
+            delay / 1000
+          )}s... (${reconnectAttempts}/${maxReconnectAttempts})`
+        );
+
+        reconnectTimeout = setTimeout(() => {
+          if (!isConnected) {
+            connectWebSocket();
+          }
+        }, delay);
+      }
+
+      // Handle WebSocket errors with detailed logging
+      function handleWebSocketError(error) {
+        console.error("WebSocket error occurred:", error);
+
+        // Provide user-friendly error messages based on connection state
+        if (ws) {
+          switch (ws.readyState) {
+            case WebSocket.CONNECTING:
+              showError(
+                "Failed to connect to chat server - please check your internet connection"
+              );
+              break;
+            case WebSocket.OPEN:
+              showError("Connection error occurred during communication");
+              break;
+            case WebSocket.CLOSING:
+              showError("Connection is closing due to an error");
+              break;
+            case WebSocket.CLOSED:
+              showError("Connection closed unexpectedly");
+              break;
+            default:
+              showError("Unknown connection error occurred");
+          }
+        } else {
+          showError("WebSocket connection failed to initialize");
+        }
+
+        updateConnectionStatus("disconnected", "Connection error");
+      }
+
+      // Display chat message
+      function displayChatMessage(message) {
+        const messageElement = createMessageElement(message, "chat");
+        messagesContainer.appendChild(messageElement);
+        scrollToBottom();
+      }
+
+      // Display system message
+      function displaySystemMessage(message) {
+        const messageElement = createMessageElement(message, "system");
+        messagesContainer.appendChild(messageElement);
+        scrollToBottom();
+      }
+
+      // Create message element
+      function createMessageElement(message, type) {
+        const messageDiv = document.createElement("div");
+        messageDiv.className = `message ${type}`;
+
+        const timestamp = new Date(message.timestamp).toLocaleTimeString();
+
+        if (type === "system") {
+          messageDiv.innerHTML = `
+                    <div class="message-header">
+                        <span class="message-from">System</span>
+                        <span class="message-timestamp">${timestamp}</span>
+                    </div>
+                    <div class="message-content">${escapeHtml(
+                      message.content
+                    )}</div>
+                `;
+        } else {
+          messageDiv.innerHTML = `
+                    <div class="message-header">
+                        <span class="message-from">${escapeHtml(
+                          message.from
+                        )}</span>
+                        <span class="message-timestamp">${timestamp}</span>
+                    </div>
+                    <div class="message-content">${escapeHtml(
+                      message.content
+                    )}</div>
+                `;
+        }
+
+        return messageDiv;
+      }
+
+      // Update users list
+      function updateUsersList(users) {
+        usersList.innerHTML = "";
+        usersCount.textContent = `${users.length} user${
+          users.length !== 1 ? "s" : ""
+        } online`;
+
+        users.forEach((user) => {
+          const userElement = document.createElement("div");
+          userElement.className = "user-item";
+          userElement.textContent = user;
+          usersList.appendChild(userElement);
+        });
+      }
+
+      // Update connection status with enhanced information
+      function updateConnectionStatus(status, text) {
+        statusIndicator.className = `status-indicator ${status}`;
+
+        // Add additional connection info for debugging
+        let statusInfo = text;
+        if (status === "connected" && lastConnectionTime) {
+          const uptime = Math.floor((new Date() - lastConnectionTime) / 1000);
+          statusInfo += ` (${uptime}s)`;
+        }
+
+        statusText.textContent = statusInfo;
+
+        // Update page title to reflect connection status
+        const baseTitle = "Realtime Chatroom";
+        switch (status) {
+          case "connected":
+            document.title = baseTitle;
+            break;
+          case "connecting":
+            document.title = `${baseTitle} - Connecting...`;
+            break;
+          case "disconnected":
+            document.title = `${baseTitle} - Disconnected`;
+            break;
+        }
+      }
+
+      // Periodic connection health check
+      function startConnectionHealthCheck() {
+        setInterval(() => {
+          if (isConnected && ws && ws.readyState === WebSocket.OPEN) {
+            // Update uptime display
+            if (lastConnectionTime) {
+              const uptime = Math.floor(
+                (new Date() - lastConnectionTime) / 1000
+              );
+              updateConnectionStatus("connected", `Connected (${uptime}s)`);
+            }
+          }
+        }, 5000); // Update every 5 seconds
+      }
+
+      // Show error message with timestamp and auto-hide
+      function showError(message) {
+        const timestamp = new Date().toLocaleTimeString();
+        errorDisplay.innerHTML = `<strong>Error (${timestamp}):</strong> ${escapeHtml(
+          message
+        )}`;
+        errorDisplay.style.display = "block";
+
+        // Auto-hide error after 10 seconds for non-critical errors
+        if (!message.includes("refresh") && !message.includes("permanently")) {
+          setTimeout(() => {
+            if (errorDisplay.textContent.includes(message)) {
+              hideError();
+            }
+          }, 10000);
+        }
+      }
+
+      // Hide error message
+      function hideError() {
+        errorDisplay.style.display = "none";
+        errorDisplay.innerHTML = "";
+      }
+
+      // Auto-scroll to bottom of messages
+      function scrollToBottom() {
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      }
+
+      // Escape HTML to prevent XSS
+      function escapeHtml(text) {
+        const div = document.createElement("div");
+        div.textContent = text;
+        return div.innerHTML;
+      }
+    </script>
+  </body>
+</html>
