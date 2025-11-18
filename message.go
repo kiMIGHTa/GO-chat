@@ -13,6 +13,7 @@ import (
 // Message type constants
 const (
 	MessageTypeChat     = "chat"
+	MessageTypePrivate  = "private"
 	MessageTypeSystem   = "system"
 	MessageTypeUserList = "user_list"
 	MessageTypeError    = "error"
@@ -23,6 +24,7 @@ const (
 type Message struct {
 	Type      string    `json:"type"`
 	From      string    `json:"from,omitempty"`
+	To        string    `json:"to,omitempty"`
 	Content   string    `json:"content,omitempty"`
 	Users     []string  `json:"users,omitempty"`
 	Error     string    `json:"error,omitempty"`
@@ -42,7 +44,7 @@ func (m *Message) Validate() error {
 
 	// Validate message type is one of the allowed constants
 	switch m.Type {
-	case MessageTypeChat, MessageTypeSystem, MessageTypeUserList, MessageTypeError, MessageTypeJoin:
+	case MessageTypeChat, MessageTypePrivate, MessageTypeSystem, MessageTypeUserList, MessageTypeError, MessageTypeJoin:
 		// Valid type
 	default:
 		return errors.New("invalid message type")
@@ -56,6 +58,22 @@ func (m *Message) Validate() error {
 		}
 		if err := validateDisplayName(m.From); err != nil {
 			return errors.New("chat message sender invalid: " + err.Error())
+		}
+	case MessageTypePrivate:
+		if err := validateMessageContent(m.Content); err != nil {
+			return err
+		}
+		if err := validateDisplayName(m.From); err != nil {
+			return errors.New("private message sender invalid: " + err.Error())
+		}
+		if m.To == "" {
+			return errors.New("private message must have recipient (To field)")
+		}
+		if err := validateDisplayName(m.To); err != nil {
+			return errors.New("private message recipient invalid: " + err.Error())
+		}
+		if m.From == m.To {
+			return errors.New("cannot send private message to yourself")
 		}
 	case MessageTypeJoin:
 		if err := validateDisplayName(m.Content); err != nil {
@@ -142,6 +160,9 @@ func (m *Message) SanitizeInput() {
 	// Sanitize display name and content by HTML escaping
 	if m.From != "" {
 		m.From = html.EscapeString(strings.TrimSpace(m.From))
+	}
+	if m.To != "" {
+		m.To = html.EscapeString(strings.TrimSpace(m.To))
 	}
 	if m.Content != "" {
 		m.Content = html.EscapeString(strings.TrimSpace(m.Content))

@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Frontend Unit Tests - Private Messaging</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+        .test-suite {
+            background: white;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .test-case {
+            padding: 10px;
+            margin: 10px 0;
+            border-left: 4px solid #ddd;
+        }
+        .test-case.pass {
+            border-left-color: #4caf50;
+            background-color: #f1f8f4;
+        }
+        .test-case.fail {
+            border-left-color: #f44336;
+            background-color: #fef1f0;
+        }
+        .test-name {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        .test-error {
+            color: #f44336;
+            font-family: monospace;
+            font-size: 12px;
+            margin-top: 5px;
+        }
+        .summary {
+            background: #333;
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        .summary.all-pass {
+            background: #4caf50;
+        }
+        .summary.has-fail {
+            background: #f44336;
+        }
+    </style>
+</head>
+<body>
+    <h1>Frontend Unit Tests - Private Messaging</h1>
+    <div id="testResults"></div>
+    <div id="testSummary" class="summary"></div>
+
+    <script>
+        // Mock DOM elements for testing
+        let messagesContainer = { scrollTop: 0 };
+        let displayName = "TestUser";
+
+        // ConversationManager class (copied from main app)
+        class ConversationManager {
+            constructor() {
+                this.conversations = new Map();
+                this.conversations.set(null, []);
+                this.activeConversation = null;
+                this.unreadCounts = new Map();
+                this.scrollPositions = new Map();
+                this.maxMessagesPerConversation = 100;
+            }
+
+            switchConversation(username) {
+                if (this.activeConversation !== null || username !== this.activeConversation) {
+                    this.saveScrollPosition(this.activeConversation);
+                }
+                this.activeConversation = username;
+                this.markAsRead(username);
+            }
+
+            addMessage(message) {
+                let conversationKey = null;
+
+                if (message.type === "private") {
+                    const currentUser = displayName;
+                    conversationKey = message.from === currentUser ? message.to : message.from;
+                } else {
+                    conversationKey = null;
+                }
+
+                if (!this.conversations.has(conversationKey)) {
+                    this.conversations.set(conversationKey, []);
+                }
+
+                const messages = this.conversations.get(conversationKey);
+                messages.push(message);
+
+                if (messages.length > this.maxMessagesPerConversation) {
+                    messages.splice(0, messages.length - this.maxMessagesPerConversation);
+                }
+
+                if (conversationKey !== this.activeConversation) {
+                    this.incrementUnreadCount(conversationKey);
+                }
+            }
+
+            getMessages(username) {
+                return this.conversations.get(username) || [];
+            }
+
+            markAsRead(username) {
+                this.unreadCounts.set(username, 0);
+            }
+
+            getUnreadCount(username) {
+                return this.unreadCounts.get(username) || 0;
+            }
+
+            incrementUnreadCount(username) {
+                const currentCount = this.getUnreadCount(username);
+                this.unreadCounts.set(username, currentCount + 1);
+            }
+
+            saveScrollPosition(username) {
+                if (messagesContainer) {
+                    this.scrollPositions.set(username, messagesContainer.scrollTop);
+                }
+            }
+
+            getScrollPosition(username) {
+                return this.scrollPositions.get(username) || null;
+            }
+
+            clearConversation(username) {
+                this.conversations.delete(username);
+                this.unreadCounts.delete(username);
+                this.scrollPositions.delete(username);
+            }
+        }
+
+        // Test framework
+        class TestRunner {
+            constructor() {
+                this.tests = [];
+                this.results = [];
+            }
+
+            test(name, fn) {
+                this.tests.push({ name, fn });
+            }
+
+            async run() {
+                for (const test of this.tests) {
+                    try {
+                        await test.fn();
+                        this.results.push({ name: test.name, pass: true });
+                    } catch (error) {
+                        this.results.push({ name: test.name, pass: false, error: error.message });
+                    }
+                }
+                this.displayResults();
+            }
+
+            displayResults() {
+                const resultsDiv = document.getElementById('testResults');
+                const summaryDiv = document.getElementById('testSummary');
+                
+                let html = '<div class="test-suite"><h2>Test Results</h2>';
+                
+                this.results.forEach(result => {
+                    const className = result.pass ? 'pass' : 'fail';
+                    const status = result.pass ? '✓ PASS' : '✗ FAIL';
+                    html += `
+                        <div class="test-case ${className}">
+                            <div class="test-name">${status}: ${result.name}</div>
+                            ${result.error ? `<div class="test-error">Error: ${result.error}</div>` : ''}
+                        </div>
+                    `;
+                });
+                
+                html += '</div>';
+                resultsDiv.innerHTML = html;
+
+                const passed = this.results.filter(r => r.pass).length;
+                const failed = this.results.filter(r => !r.pass).length;
+                const total = this.results.length;
+                
+                const summaryClass = failed === 0 ? 'summary all-pass' : 'summary has-fail';
+                summaryDiv.className = summaryClass;
+                summaryDiv.innerHTML = `
+                    <strong>Test Summary:</strong> ${passed}/${total} tests passed, ${failed} failed
+                `;
+            }
+        }
+
+        // Assertion helpers
+        function assertEqual(actual, expected, message) {
+            if (actual !== expected) {
+                throw new Error(message || `Expected ${expected}, got ${actual}`);
+            }
+        }
+
+        function assertTrue(value, message) {
+            if (!value) {
+                throw new Error(message || `Expected true, got ${value}`);
+            }
+        }
+
+        function assertFalse(value, message) {
+            if (value) {
+                throw new Error(message || `Expected false, got ${value}`);
+            }
+        }
+
+        function assertArrayEqual(actual, expected, message) {
+            if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+                throw new Error(message || `Arrays not equal: ${JSON.stringify(actual)} !== ${JSON.stringify(expected)}`);
+            }
+        }
+
+        // Test Suite
+        const runner = new TestRunner();
+
+        // Test ConversationManager.switchConversation
+        runner.test('ConversationManager.switchConversation - switches to private conversation', () => {
+            const manager = new ConversationManager();
+            manager.switchConversation('Alice');
+            assertEqual(manager.activeConversation, 'Alice', 'Active conversation should be Alice');
+        });
+
+        runner.test('ConversationManager.switchConversation - switches to public conversation', () => {
+            const manager = new ConversationManager();
+            manager.switchConversation('Alice');
+            manager.switchConversation(null);
+            assertEqual(manager.activeConversation, null, 'Active conversation should be null (public)');
+        });
+
+        runner.test('ConversationManager.switchConversation - marks conversation as read', () => {
+            const manager = new ConversationManager();
+            manager.unreadCounts.set('Bob', 5);
+            manager.switchConversation('Bob');
+            assertEqual(manager.getUnreadCount('Bob'), 0, 'Unread count should be 0 after switching');
+        });
+
+        // Test ConversationManager.addMessage routing
+        runner.test('ConversationManager.addMessage - routes public message correctly', () => {
+            displayName = 'TestUser';
+            const manager = new ConversationManager();
+            const message = { type: 'chat', from: 'Alice', content: 'Hello everyone!' };
+            manager.addMessage(message);
+            
+            const publicMessages = manager.getMessages(null);
+            assertEqual(publicMessages.length, 1, 'Public conversation should have 1 message');
+            assertEqual(publicMessages[0].content, 'Hello everyone!', 'Message content should match');
+        });
+
+        runner.test('ConversationManager.addMessage - routes received private message correctly', () => {
+            displayName = 'TestUser';
+            const manager = new ConversationManager();
+            const message = { type: 'private', from: 'Alice', to: 'TestUser', content: 'Hi TestUser!' };
+            manager.addMessage(message);
+            
+            const aliceMessages = manager.getMessages('Alice');
+            assertEqual(aliceMessages.length, 1, 'Alice conversation should have 1 message');
+            assertEqual(aliceMessages[0].from, 'Alice', 'Message should be from Alice');
+        });
+
+        runner.test('ConversationManager.addMessage - routes sent private message correctly', () => {
+            displayName = 'TestUser';
+            const manager = new ConversationManager();
+            const message = { type: 'private', from: 'TestUser', to: 'Bob', content: 'Hi Bob!' };
+            manager.addMessage(message);
+            
+            const bobMessages = manager.getMessages('Bob');
+            assertEqual(bobMessages.length, 1, 'Bob conversation should have 1 message');
+            assertEqual(bobMessages[0].to, 'Bob', 'Message should be to Bob');
+        });
+
+        runner.test('ConversationManager.addMessage - increments unread count for inactive conversation', () => {
+            displayName = 'TestUser';
+            const manager = new ConversationManager();
+            manager.switchConversation(null); // Active on public
+            
+            const message = { type: 'private', from: 'Alice', to: 'TestUser', content: 'Hi!' };
+            manager.addMessage(message);
+            
+            assertEqual(manager.getUnreadCount('Alice'), 1, 'Alice should have 1 unread message');
+        });
+
+        runner.test('ConversationManager.addMessage - does not increment unread for active conversation', () => {
+            displayName = 'TestUser';
+            const manager = new ConversationManager();
+            manager.switchConversation('Alice'); // Active on Alice
+            
+            const message = { type: 'private', from: 'Alice', to: 'TestUser', content: 'Hi!' };
+            manager.addMessage(message);
+            
+            assertEqual(manager.getUnreadCount('Alice'), 0, 'Alice should have 0 unread messages');
+        });
+
+        // Test ConversationManager.markAsRead
+        runner.test('ConversationManager.markAsRead - clears unread count', () => {
+            const manager = new ConversationManager();
+            manager.unreadCounts.set('Charlie', 10);
+            manager.markAsRead('Charlie');
+            assertEqual(manager.getUnreadCount('Charlie'), 0, 'Unread count should be 0');
+        });
+
+        // Test ConversationManager.getUnreadCount
+        runner.test('ConversationManager.getUnreadCount - returns correct count', () => {
+            const manager = new ConversationManager();
+            manager.unreadCounts.set('Dave', 7);
+            assertEqual(manager.getUnreadCount('Dave'), 7, 'Should return 7 unread messages');
+        });
+
+        runner.test('ConversationManager.getUnreadCount - returns 0 for non-existent user', () => {
+            const manager = new ConversationManager();
+            assertEqual(manager.getUnreadCount('NonExistent'), 0, 'Should return 0 for non-existent user');
+        });
+
+        // Test ConversationManager.clearConversation
+        runner.test('ConversationManager.clearConversation - removes all user data', () => {
+            const manager = new ConversationManager();
+            manager.conversations.set('Eve', [{ content: 'test' }]);
+            manager.unreadCounts.set('Eve', 3);
+            manager.scrollPositions.set('Eve', 100);
+            
+            manager.clearConversation('Eve');
+            
+            assertFalse(manager.conversations.has('Eve'), 'Conversation should be deleted');
+            assertEqual(manager.getUnreadCount('Eve'), 0, 'Unread count should be 0');
+            assertEqual(manager.getScrollPosition('Eve'), null, 'Scroll position should be null');
+        });
+
+        // Test message history limit
+        runner.test('ConversationManager.addMessage - limits message history', () => {
+            displayName = 'TestUser';
+            const manager = new ConversationManager();
+            
+            // Add more than maxMessagesPerConversation messages
+            for (let i = 0; i < 150; i++) {
+                const message = { type: 'chat', from: 'Alice', content: `Message ${i}` };
+                manager.addMessage(message);
+            }
+            
+            const publicMessages = manager.getMessages(null);
+            assertEqual(publicMessages.length, 100, 'Should limit to 100 messages');
+            assertEqual(publicMessages[0].content, 'Message 50', 'Should keep most recent messages');
+        });
+
+        // Test scroll position management
+        runner.test('ConversationManager - saves and retrieves scroll position', () => {
+            const manager = new ConversationManager();
+            messagesContainer.scrollTop = 250;
+            
+            manager.saveScrollPosition('Frank');
+            assertEqual(manager.getScrollPosition('Frank'), 250, 'Should save scroll position');
+        });
+
+        runner.test('ConversationManager - returns null for non-existent scroll position', () => {
+            const manager = new ConversationManager();
+            assertEqual(manager.getScrollPosition('NonExistent'), null, 'Should return null');
+        });
+
+        // Test user list click handling (simulated)
+        runner.test('User list click - switches to user conversation', () => {
+            const manager = new ConversationManager();
+            manager.switchConversation(null); // Start on public
+            
+            // Simulate clicking on a user
+            const clickedUser = 'Alice';
+            manager.switchConversation(clickedUser);
+            
+            assertEqual(manager.activeConversation, 'Alice', 'Should switch to Alice conversation');
+        });
+
+        runner.test('User list click - marks conversation as read on click', () => {
+            const manager = new ConversationManager();
+            manager.unreadCounts.set('Bob', 5);
+            
+            // Simulate clicking on Bob
+            manager.switchConversation('Bob');
+            
+            assertEqual(manager.getUnreadCount('Bob'), 0, 'Should mark Bob conversation as read');
+        });
+
+        // Test active conversation highlighting (logic)
+        runner.test('Active conversation highlighting - identifies active conversation', () => {
+            const manager = new ConversationManager();
+            manager.switchConversation('Charlie');
+            
+            // Check if conversation is active
+            const isCharlieActive = manager.activeConversation === 'Charlie';
+            const isPublicActive = manager.activeConversation === null;
+            
+            assertTrue(isCharlieActive, 'Charlie should be active conversation');
+            assertFalse(isPublicActive, 'Public should not be active conversation');
+        });
+
+        runner.test('Active conversation highlighting - public chat is active', () => {
+            const manager = new ConversationManager();
+            manager.switchConversation(null);
+            
+            const isPublicActive = manager.activeConversation === null;
+            assertTrue(isPublicActive, 'Public chat should be active');
+        });
+
+        // Test unread badge display/hide logic
+        runner.test('Unread badge logic - shows badge when count > 0', () => {
+            const manager = new ConversationManager();
+            manager.unreadCounts.set('Dave', 3);
+            
+            const unreadCount = manager.getUnreadCount('Dave');
+            const shouldShowBadge = unreadCount > 0;
+            
+            assertTrue(shouldShowBadge, 'Badge should be shown when unread count > 0');
+            assertEqual(unreadCount, 3, 'Badge should show count of 3');
+        });
+
+        runner.test('Unread badge logic - hides badge when count is 0', () => {
+            const manager = new ConversationManager();
+            manager.markAsRead('Eve');
+            
+            const unreadCount = manager.getUnreadCount('Eve');
+            const shouldShowBadge = unreadCount > 0;
+            
+            assertFalse(shouldShowBadge, 'Badge should be hidden when unread count is 0');
+        });
+
+        runner.test('Unread badge logic - updates badge on new message', () => {
+            displayName = 'TestUser';
+            const manager = new ConversationManager();
+            manager.switchConversation(null); // Active on public
+            
+            // Receive private message from Frank
+            const message = { type: 'private', from: 'Frank', to: 'TestUser', content: 'Hello!' };
+            manager.addMessage(message);
+            
+            const unreadCount = manager.getUnreadCount('Frank');
+            const shouldShowBadge = unreadCount > 0;
+            
+            assertTrue(shouldShowBadge, 'Badge should appear after receiving message');
+            assertEqual(unreadCount, 1, 'Badge should show count of 1');
+        });
+
+        runner.test('Unread badge logic - badge disappears when conversation opened', () => {
+            displayName = 'TestUser';
+            const manager = new ConversationManager();
+            manager.unreadCounts.set('Grace', 5);
+            
+            // Open Grace's conversation
+            manager.switchConversation('Grace');
+            
+            const unreadCount = manager.getUnreadCount('Grace');
+            const shouldShowBadge = unreadCount > 0;
+            
+            assertFalse(shouldShowBadge, 'Badge should disappear when conversation is opened');
+        });
+
+        // Run all tests
+        document.addEventListener('DOMContentLoaded', () => {
+            runner.run();
+        });
+    </script>
+</body>
+</html>

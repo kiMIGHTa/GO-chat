@@ -148,6 +148,16 @@ body {
   letter-spacing: 2px;
 }
 
+.chat-header-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #00bcd4;
+  font-size: 16px;
+  margin-left: 20px;
+  font-weight: 500;
+}
+
 .connection-status {
   display: flex;
   align-items: center;
@@ -235,6 +245,18 @@ body {
 
 .message.error .message-content {
   color: #ef9a9a;
+}
+
+.message.private {
+  background: linear-gradient(145deg, #1b1b2a, #0f0f1a);
+  border-left-color: #9c27b0;
+}
+
+.private-indicator {
+  color: #9c27b0;
+  font-size: 12px;
+  font-weight: 600;
+  margin-left: 8px;
 }
 
 .message-header {
@@ -389,6 +411,62 @@ body {
   background: linear-gradient(145deg, #333, #2a2a2a);
   transform: translateX(5px);
   box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+.user-item.public-chat {
+  border-left-color: #ff9800;
+  margin-bottom: 15px;
+  font-weight: 600;
+}
+
+.user-item.active {
+  background: linear-gradient(145deg, #00bcd4, #0097a7);
+  border-left-color: #ffffff;
+}
+
+.user-item.active:hover {
+  background: linear-gradient(145deg, #0097a7, #00838f);
+}
+
+.user-item.current-user {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.user-item.current-user:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.user-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.user-name {
+  flex: 1;
+}
+
+.unread-badge {
+  background: #f44336;
+  color: white;
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: bold;
+  margin-left: 8px;
+  min-width: 20px;
+  text-align: center;
+}
+
+.online-indicator {
+  width: 8px;
+  height: 8px;
+  background: #4caf50;
+  border-radius: 50%;
+  margin-left: 8px;
+  flex-shrink: 0;
 }
 
 .user-item.joining {

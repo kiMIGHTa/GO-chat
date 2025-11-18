@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"sync"
 	"time"
@@ -16,6 +17,13 @@ const (
 	// Idle connection timeout
 	idleTimeout = 30 * time.Minute
 )
+
+// PrivateMessageRequest represents a request to send a private message
+type PrivateMessageRequest struct {
+	From    string
+	To      string
+	Message Message
+}
 
 // Hub maintains the set of active clients and broadcasts messages to the clients
 type Hub struct {
@@ -42,18 +50,24 @@ type Hub struct {
 	
 	// Cleanup ticker for periodic maintenance
 	cleanupTicker *time.Ticker
+	
+	// Private messaging support
+	privateMessage chan PrivateMessageRequest
+	clientsByName  map[string]*Client
 }
 
 // NewHub creates a new Hub instance
 func NewHub() *Hub {
 	hub := &Hub{
-		clients:       make(map[*Client]bool),
-		broadcast:     make(chan []byte),
-		register:      make(chan *Client),
-		unregister:    make(chan *Client),
-		userList:      make(map[*Client]string),
-		stop:          make(chan struct{}),
-		cleanupTicker: time.NewTicker(cleanupInterval),
+		clients:        make(map[*Client]bool),
+		broadcast:      make(chan []byte),
+		register:       make(chan *Client),
+		unregister:     make(chan *Client),
+		userList:       make(map[*Client]string),
+		stop:           make(chan struct{}),
+		cleanupTicker:  time.NewTicker(cleanupInterval),
+		privateMessage: make(chan PrivateMessageRequest),
+		clientsByName:  make(map[string]*Client),
 	}
 	return hub
 }
@@ -79,6 +93,54 @@ func (h *Hub) Run() {
 		case <-h.cleanupTicker.C:
 			// Periodic cleanup of idle connections
 			h.cleanupIdleConnections()
+		case req := <-h.privateMessage:
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						// Log panic with full context
+						log.Printf("[PRIVATE_MSG] Panic recovered: from=%s to=%s error=%v", 
+							req.From, req.To, r)
+					}
+				}()
+				
+				// Log private message request received
+				log.Printf("[PRIVATE_MSG] Request received: from=%s to=%s", req.From, req.To)
+				
+				// Route private message to specific recipient
+				err := h.SendPrivateMessage(req.From, req.To, req.Message)
+				if err != nil {
+					// Log all private message errors with context
+					log.Printf("[PRIVATE_MSG] Routing error: from=%s to=%s error=%s error_type=routing_failure", 
+						req.From, req.To, err.Error())
+					
+					// Send error message back to sender if routing fails
+					sender, ok := h.GetClientByName(req.From)
+					if ok {
+						errorMsg := &Message{
+							Type:  MessageTypeError,
+							Error: "Failed to send private message: " + err.Error(),
+						}
+						errorMsg.SetTimestamp()
+						errorData, jsonErr := errorMsg.ToJSON()
+						if jsonErr == nil {
+							select {
+							case sender.send <- errorData:
+								log.Printf("[PRIVATE_MSG] Error notification sent: from=%s to=%s", 
+									req.From, req.To)
+							default:
+								log.Printf("[PRIVATE_MSG] Error notification failed: from=%s to=%s reason=channel_full", 
+									req.From, req.To)
+							}
+						} else {
+							log.Printf("[PRIVATE_MSG] Error message marshal failed: from=%s to=%s error=%v", 
+								req.From, req.To, jsonErr)
+						}
+					} else {
+						log.Printf("[PRIVATE_MSG] Sender not found for error notification: from=%s to=%s", 
+							req.From, req.To)
+					}
+				}
+			}()
 		case client := <-h.register:
 			func() {
 				defer func() {
@@ -110,10 +172,11 @@ func (h *Hub) Run() {
 						close(client.send)
 					}()
 					
-					// Remove from user list and broadcast updated list
+					// Remove from user list and clientsByName map
 					h.mu.Lock()
 					displayName := h.userList[client]
 					delete(h.userList, client)
+					delete(h.clientsByName, displayName)
 					h.mu.Unlock()
 					
 					log.Printf("Client unregistered: %s", displayName)
@@ -155,7 +218,9 @@ func (h *Hub) Run() {
 							close(client.send)
 							delete(h.clients, client)
 							h.mu.Lock()
+							displayName := h.userList[client]
 							delete(h.userList, client)
+							delete(h.clientsByName, displayName)
 							h.mu.Unlock()
 						}()
 					}
@@ -165,12 +230,91 @@ func (h *Hub) Run() {
 	}
 }
 
+// UpdateClientName updates the clientsByName mapping for a client
+func (h *Hub) UpdateClientName(client *Client, name string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.clientsByName[name] = client
+}
+
+// GetClientByName retrieves a client by display name
+func (h *Hub) GetClientByName(name string) (*Client, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	client, ok := h.clientsByName[name]
+	return client, ok
+}
+
+// SendPrivateMessage routes a private message to a specific user
+func (h *Hub) SendPrivateMessage(from, to string, message Message) error {
+	// Log private message routing attempt
+	log.Printf("[PRIVATE_MSG] Routing attempt: from=%s to=%s content_length=%d", 
+		from, to, len(message.Content))
+	
+	// Validate recipient exists
+	recipient, ok := h.GetClientByName(to)
+	if !ok {
+		// Log recipient lookup failure with context
+		log.Printf("[PRIVATE_MSG] Recipient lookup failed: from=%s to=%s error=recipient_not_found", 
+			from, to)
+		return errors.New("recipient not found or offline")
+	}
+	
+	// Get sender for echo
+	sender, senderExists := h.GetClientByName(from)
+	
+	// Convert message to JSON
+	jsonData, err := message.ToJSON()
+	if err != nil {
+		// Log JSON conversion error with context
+		log.Printf("[PRIVATE_MSG] JSON conversion error: from=%s to=%s error=%v", 
+			from, to, err)
+		return err
+	}
+	
+	// Send message to recipient with error handling for closed channels
+	select {
+	case recipient.send <- jsonData:
+		// Log successful delivery with context
+		log.Printf("[PRIVATE_MSG] Delivered successfully: from=%s to=%s content_length=%d", 
+			from, to, len(message.Content))
+	default:
+		// Log delivery failure with context
+		log.Printf("[PRIVATE_MSG] Delivery failed: from=%s to=%s error=channel_full_or_closed", 
+			from, to)
+		return errors.New("failed to deliver message to recipient")
+	}
+	
+	// Send echo copy to sender if sender exists
+	if senderExists {
+		select {
+		case sender.send <- jsonData:
+			// Log successful echo with context
+			log.Printf("[PRIVATE_MSG] Echo sent: from=%s to=%s", from, to)
+		default:
+			// Log echo failure (non-critical) with context
+			log.Printf("[PRIVATE_MSG] Echo failed (non-critical): from=%s to=%s error=channel_full_or_closed", 
+				from, to)
+			// Don't return error for echo failure - message was delivered to recipient
+		}
+	} else {
+		// Log sender not found for echo
+		log.Printf("[PRIVATE_MSG] Echo skipped: from=%s to=%s reason=sender_not_found", 
+			from, to)
+	}
+	
+	return nil
+}
+
 // RegisterClient registers a new client with the hub and broadcasts join message
 func (h *Hub) RegisterClient(client *Client, displayName string) {
 	// Add to user list first
 	h.mu.Lock()
 	h.userList[client] = displayName
 	h.mu.Unlock()
+	
+	// Update clientsByName mapping
+	h.UpdateClientName(client, displayName)
 	
 	// Register the client
 	h.register <- client

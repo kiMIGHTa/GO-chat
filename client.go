@@ -271,6 +271,115 @@ func (c *Client) ReadPump() {
 			log.Printf("Broadcasting message from %s (remaining rate limit: %d)", c.displayName, c.getRemainingRateLimit())
 			c.hub.BroadcastMessage(*message)
 
+		case MessageTypePrivate:
+			// Validate sender is authenticated (displayName not empty)
+			if c.displayName == "" {
+				// Log authentication validation failure with context
+				log.Printf("[PRIVATE_MSG] Validation failed: error=unauthenticated_sender client_addr=%s", 
+					c.conn.RemoteAddr().String())
+				errorMsg := &Message{
+					Type:  MessageTypeError,
+					Error: "Must join chat before sending private messages",
+				}
+				errorMsg.SetTimestamp()
+				c.sendErrorMessage(errorMsg)
+				continue
+			}
+
+			// Validate To field is not empty
+			if message.To == "" {
+				// Log missing recipient validation failure with context
+				log.Printf("[PRIVATE_MSG] Validation failed: from=%s error=missing_recipient", 
+					c.displayName)
+				errorMsg := &Message{
+					Type:  MessageTypeError,
+					Error: "Private message must have a recipient",
+				}
+				errorMsg.SetTimestamp()
+				c.sendErrorMessage(errorMsg)
+				continue
+			}
+
+			// Validate To field is not equal to From (prevent self-messaging)
+			if message.To == c.displayName {
+				// Log self-messaging validation failure with context
+				log.Printf("[PRIVATE_MSG] Validation failed: from=%s to=%s error=self_messaging_attempt", 
+					c.displayName, message.To)
+				errorMsg := &Message{
+					Type:  MessageTypeError,
+					Error: "Cannot send private message to yourself",
+				}
+				errorMsg.SetTimestamp()
+				c.sendErrorMessage(errorMsg)
+				continue
+			}
+
+			// Check rate limiting for private messages
+			if !c.checkRateLimit() {
+				remaining := c.getRemainingRateLimit()
+				// Log rate limit validation failure with context
+				log.Printf("[PRIVATE_MSG] Validation failed: from=%s to=%s error=rate_limit_exceeded remaining=%d", 
+					c.displayName, message.To, remaining)
+				errorMsg := &Message{
+					Type:  MessageTypeError,
+					Error: "Rate limit exceeded. Please slow down your messages.",
+				}
+				errorMsg.SetTimestamp()
+				c.sendErrorMessage(errorMsg)
+				continue
+			}
+
+			// Validate message content using existing validateMessageContent
+			if err := validateMessageContent(message.Content); err != nil {
+				// Log content validation failure with context
+				log.Printf("[PRIVATE_MSG] Validation failed: from=%s to=%s error=content_validation content_length=%d validation_error=%v", 
+					c.displayName, message.To, len(message.Content), err)
+				errorMsg := &Message{
+					Type:  MessageTypeError,
+					Error: "Message validation failed: " + err.Error(),
+				}
+				errorMsg.SetTimestamp()
+				c.sendErrorMessage(errorMsg)
+				continue
+			}
+
+			// Set message From field to client's displayName
+			message.From = c.displayName
+
+			// Set message timestamp
+			message.SetTimestamp()
+
+			// Sanitize message input
+			message.SanitizeInput()
+
+			// Create PrivateMessageRequest and send to hub.privateMessage channel
+			privateReq := PrivateMessageRequest{
+				From:    c.displayName,
+				To:      message.To,
+				Message: *message,
+			}
+			
+			// Log successful validation and routing attempt
+			log.Printf("[PRIVATE_MSG] Validation passed: from=%s to=%s content_length=%d remaining_rate_limit=%d", 
+				c.displayName, message.To, len(message.Content), c.getRemainingRateLimit())
+			
+			select {
+			case c.hub.privateMessage <- privateReq:
+				// Successfully queued private message
+				log.Printf("[PRIVATE_MSG] Queued successfully: from=%s to=%s", 
+					c.displayName, message.To)
+			default:
+				// Log queue failure with context
+				log.Printf("[PRIVATE_MSG] Queue failed: from=%s to=%s error=channel_full", 
+					c.displayName, message.To)
+				errorMsg := &Message{
+					Type:  MessageTypeError,
+					Error: "Failed to send private message - server busy",
+				}
+				errorMsg.SetTimestamp()
+				c.sendErrorMessage(errorMsg)
+			}
+
 		default:
 			// Unknown message type
 			log.Printf("Unknown message type '%s' from client %s", message.Type, c.GetDisplayName())

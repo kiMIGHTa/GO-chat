@@ -267,3 +267,163 @@ func TestClient_Lifecycle(t *testing.T) {
 	// Wait for the test to complete
 	time.Sleep(100 * time.Millisecond)
 }
+
+// Test client rate limiting
+func TestClient_RateLimit(t *testing.T) {
+	hub := NewHub()
+	
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatal("Failed to upgrade connection:", err)
+		}
+		defer conn.Close()
+		
+		client := NewClient(hub, conn)
+		client.SetDisplayName("TestUser")
+		
+		// Test initial rate limit
+		remaining := client.getRemainingRateLimit()
+		if remaining != maxMessagesPerMinute {
+			t.Errorf("Initial rate limit = %d, want %d", remaining, maxMessagesPerMinute)
+		}
+		
+		// Send messages up to the limit
+		for i := 0; i < maxMessagesPerMinute; i++ {
+			if !client.checkRateLimit() {
+				t.Errorf("checkRateLimit() failed at message %d", i)
+			}
+		}
+		
+		// Next message should be rate limited
+		if client.checkRateLimit() {
+			t.Error("checkRateLimit() should return false after reaching limit")
+		}
+		
+		// Verify remaining is 0
+		remaining = client.getRemainingRateLimit()
+		if remaining != 0 {
+			t.Errorf("Remaining rate limit = %d, want 0", remaining)
+		}
+	}))
+	defer server.Close()
+	
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatal("Failed to connect:", err)
+	}
+	defer conn.Close()
+	
+	time.Sleep(100 * time.Millisecond)
+}
+
+// Test private message rate limiting
+func TestClient_PrivateMessageRateLimit(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+	
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatal("Failed to upgrade connection:", err)
+		}
+		defer conn.Close()
+		
+		client := NewClient(hub, conn)
+		client.SetDisplayName("Alice")
+		hub.UpdateClientName(client, "Alice")
+		
+		// Create recipient
+		recipientConn, _ := upgrader.Upgrade(w, r, nil)
+		if recipientConn == nil {
+			recipientConn = conn
+		}
+		recipient := NewClient(hub, recipientConn)
+		recipient.SetDisplayName("Bob")
+		hub.UpdateClientName(recipient, "Bob")
+		
+		// Fill up rate limit with private messages
+		for i := 0; i < maxMessagesPerMinute; i++ {
+			if !client.checkRateLimit() {
+				t.Errorf("Rate limit check failed at message %d", i)
+			}
+		}
+		
+		// Next private message should be rate limited
+		if client.checkRateLimit() {
+			t.Error("Private message should be rate limited after reaching limit")
+		}
+		
+		// Verify error handling for rate limited message
+		remaining := client.getRemainingRateLimit()
+		if remaining != 0 {
+			t.Errorf("Expected 0 remaining messages, got %d", remaining)
+		}
+	}))
+	defer server.Close()
+	
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatal("Failed to connect:", err)
+	}
+	defer conn.Close()
+	
+	time.Sleep(100 * time.Millisecond)
+}
+
+// Test Client activity tracking
+func TestClient_ActivityTracking(t *testing.T) {
+	hub := NewHub()
+	
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatal("Failed to upgrade connection:", err)
+		}
+		defer conn.Close()
+		
+		client := NewClient(hub, conn)
+		
+		// Test initial timestamps
+		connectedAt := client.GetConnectedAt()
+		lastActivity := client.GetLastActivity()
+		
+		if connectedAt.IsZero() {
+			t.Error("ConnectedAt should not be zero")
+		}
+		
+		if lastActivity.IsZero() {
+			t.Error("LastActivity should not be zero")
+		}
+		
+		if !connectedAt.Equal(lastActivity) {
+			t.Error("Initial ConnectedAt and LastActivity should be equal")
+		}
+		
+		// Wait a bit and update activity
+		time.Sleep(10 * time.Millisecond)
+		client.updateActivity()
+		
+		newLastActivity := client.GetLastActivity()
+		if !newLastActivity.After(lastActivity) {
+			t.Error("LastActivity should be updated after updateActivity()")
+		}
+		
+		// ConnectedAt should remain unchanged
+		if !client.GetConnectedAt().Equal(connectedAt) {
+			t.Error("ConnectedAt should not change after updateActivity()")
+		}
+	}))
+	defer server.Close()
+	
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatal("Failed to connect:", err)
+	}
+	defer conn.Close()
+	
+	time.Sleep(100 * time.Millisecond)
+}

@@ -149,6 +149,101 @@ func TestMessage_Validate(t *testing.T) {
 			wantErr: true,
 			errMsg:  "user_list message must have users field",
 		},
+		{
+			name: "valid private message",
+			message: Message{
+				Type:    MessageTypePrivate,
+				From:    "Alice",
+				To:      "Bob",
+				Content: "Hello Bob!",
+			},
+			wantErr: false,
+		},
+		{
+			name: "private message without content",
+			message: Message{
+				Type: MessageTypePrivate,
+				From: "Alice",
+				To:   "Bob",
+			},
+			wantErr: true,
+			errMsg:  "message content cannot be empty",
+		},
+		{
+			name: "private message without sender",
+			message: Message{
+				Type:    MessageTypePrivate,
+				To:      "Bob",
+				Content: "Hello Bob!",
+			},
+			wantErr: true,
+			errMsg:  "private message sender invalid",
+		},
+		{
+			name: "private message without recipient",
+			message: Message{
+				Type:    MessageTypePrivate,
+				From:    "Alice",
+				Content: "Hello!",
+			},
+			wantErr: true,
+			errMsg:  "private message must have recipient",
+		},
+		{
+			name: "private message with empty recipient",
+			message: Message{
+				Type:    MessageTypePrivate,
+				From:    "Alice",
+				To:      "",
+				Content: "Hello!",
+			},
+			wantErr: true,
+			errMsg:  "private message must have recipient",
+		},
+		{
+			name: "private message to self",
+			message: Message{
+				Type:    MessageTypePrivate,
+				From:    "Alice",
+				To:      "Alice",
+				Content: "Hello myself!",
+			},
+			wantErr: true,
+			errMsg:  "cannot send private message to yourself",
+		},
+		{
+			name: "private message with invalid recipient name",
+			message: Message{
+				Type:    MessageTypePrivate,
+				From:    "Alice",
+				To:      "Bob<script>alert('xss')</script>",
+				Content: "Hello!",
+			},
+			wantErr: true,
+			errMsg:  "private message recipient invalid",
+		},
+		{
+			name: "private message with invalid sender name",
+			message: Message{
+				Type:    MessageTypePrivate,
+				From:    "Alice<script>",
+				To:      "Bob",
+				Content: "Hello!",
+			},
+			wantErr: true,
+			errMsg:  "private message sender invalid",
+		},
+		{
+			name: "private message with too long content",
+			message: Message{
+				Type:    MessageTypePrivate,
+				From:    "Alice",
+				To:      "Bob",
+				Content: strings.Repeat("a", 1001),
+			},
+			wantErr: true,
+			errMsg:  "cannot exceed 1000 characters",
+		},
 	}
 
 	for _, tt := range tests {
@@ -341,10 +436,52 @@ func TestMessage_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMessage_PrivateMessageJSONRoundTrip(t *testing.T) {
+	original := &Message{
+		Type:    MessageTypePrivate,
+		From:    "Alice",
+		To:      "Bob",
+		Content: "Hello Bob!",
+	}
+	original.SetTimestamp()
+
+	// Convert to JSON
+	jsonData, err := original.ToJSON()
+	if err != nil {
+		t.Errorf("ToJSON() error = %v", err)
+		return
+	}
+
+	// Convert back from JSON
+	restored, err := MessageFromJSON(jsonData)
+	if err != nil {
+		t.Errorf("MessageFromJSON() error = %v", err)
+		return
+	}
+
+	// Compare fields
+	if restored.Type != original.Type {
+		t.Errorf("Round trip Type = %v, want %v", restored.Type, original.Type)
+	}
+	if restored.From != original.From {
+		t.Errorf("Round trip From = %v, want %v", restored.From, original.From)
+	}
+	if restored.To != original.To {
+		t.Errorf("Round trip To = %v, want %v", restored.To, original.To)
+	}
+	if restored.Content != original.Content {
+		t.Errorf("Round trip Content = %v, want %v", restored.Content, original.Content)
+	}
+	if !restored.Timestamp.Equal(original.Timestamp) {
+		t.Errorf("Round trip Timestamp = %v, want %v", restored.Timestamp, original.Timestamp)
+	}
+}
+
 func TestMessageTypeConstants(t *testing.T) {
 	// Verify all message type constants are defined correctly
 	expectedTypes := map[string]string{
 		"MessageTypeChat":     "chat",
+		"MessageTypePrivate":  "private",
 		"MessageTypeSystem":   "system",
 		"MessageTypeUserList": "user_list",
 		"MessageTypeError":    "error",
@@ -353,6 +490,7 @@ func TestMessageTypeConstants(t *testing.T) {
 
 	actualTypes := map[string]string{
 		"MessageTypeChat":     MessageTypeChat,
+		"MessageTypePrivate":  MessageTypePrivate,
 		"MessageTypeSystem":   MessageTypeSystem,
 		"MessageTypeUserList": MessageTypeUserList,
 		"MessageTypeError":    MessageTypeError,
@@ -595,6 +733,21 @@ func TestMessage_SanitizeInput(t *testing.T) {
 				Content: "Hello world",
 			},
 		},
+		{
+			name: "sanitize private message",
+			input: Message{
+				Type:    MessageTypePrivate,
+				From:    "Alice<script>",
+				To:      "  Bob<b>test</b>  ",
+				Content: "Hello <i>world</i>!",
+			},
+			expected: Message{
+				Type:    MessageTypePrivate,
+				From:    "Alice&lt;script&gt;",
+				To:      "Bob&lt;b&gt;test&lt;/b&gt;",
+				Content: "Hello &lt;i&gt;world&lt;/i&gt;!",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -605,6 +758,9 @@ func TestMessage_SanitizeInput(t *testing.T) {
 
 			if message.From != tt.expected.From {
 				t.Errorf("SanitizeInput() From = %v, want %v", message.From, tt.expected.From)
+			}
+			if message.To != tt.expected.To {
+				t.Errorf("SanitizeInput() To = %v, want %v", message.To, tt.expected.To)
 			}
 			if message.Content != tt.expected.Content {
 				t.Errorf("SanitizeInput() Content = %v, want %v", message.Content, tt.expected.Content)

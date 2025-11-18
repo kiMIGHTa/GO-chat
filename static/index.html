@@ -31,6 +31,9 @@
       <!-- Header -->
       <div class="header">
         <h1>Realtime Chatroom</h1>
+        <div class="chat-header-info" id="chatHeaderInfo">
+          <span id="activeConversationName">Public Chatroom</span>
+        </div>
         <div class="connection-status">
           <div id="statusIndicator" class="status-indicator connecting"></div>
           <span id="statusText">Connecting...</span>
@@ -79,6 +82,10 @@
             <div id="usersCount" class="users-count">0 users online</div>
           </div>
           <div id="usersList" class="users-list">
+            <!-- Public chatroom button -->
+            <div class="user-item public-chat active" id="publicChatButton">
+              <span class="user-name">📢 Public Chatroom</span>
+            </div>
             <!-- Online users will be dynamically added here -->
           </div>
         </div>
@@ -86,6 +93,116 @@
     </div>
 
     <script>
+      // ConversationManager class for managing private and public conversations
+      class ConversationManager {
+        constructor() {
+          // Map to store conversations: null key for public, username for private
+          this.conversations = new Map();
+          // Initialize public conversation with empty array
+          this.conversations.set(null, []);
+          // Track active conversation: null for public, string for private
+          this.activeConversation = null;
+          // Map to track unread message counts per user
+          this.unreadCounts = new Map();
+          // Map to store scroll positions per conversation
+          this.scrollPositions = new Map();
+          // Maximum messages per conversation to prevent memory issues
+          this.maxMessagesPerConversation = 100;
+        }
+
+        // Switch to a conversation (null for public, username for private)
+        switchConversation(username) {
+          // Save scroll position of current conversation before switching
+          if (this.activeConversation !== null || username !== this.activeConversation) {
+            this.saveScrollPosition(this.activeConversation);
+          }
+          
+          this.activeConversation = username;
+          // Mark conversation as read when switching to it
+          this.markAsRead(username);
+        }
+
+        // Add message to appropriate conversation
+        addMessage(message) {
+          // Determine which conversation this message belongs to
+          let conversationKey = null;
+
+          if (message.type === "private") {
+            // For private messages, determine the other user
+            // If we sent it, the conversation is with the recipient (To)
+            // If we received it, the conversation is with the sender (From)
+            const currentUser = displayName;
+            conversationKey =
+              message.from === currentUser ? message.to : message.from;
+          } else {
+            // Public messages go to null key
+            conversationKey = null;
+          }
+
+          // Initialize conversation if it doesn't exist
+          if (!this.conversations.has(conversationKey)) {
+            this.conversations.set(conversationKey, []);
+          }
+
+          // Get conversation messages
+          const messages = this.conversations.get(conversationKey);
+          
+          // Add message to conversation
+          messages.push(message);
+
+          // Limit conversation history to prevent memory issues
+          if (messages.length > this.maxMessagesPerConversation) {
+            // Remove oldest messages, keeping only the last maxMessagesPerConversation
+            messages.splice(0, messages.length - this.maxMessagesPerConversation);
+          }
+
+          // Update unread count if message is not for active conversation
+          if (conversationKey !== this.activeConversation) {
+            this.incrementUnreadCount(conversationKey);
+          }
+        }
+
+        // Get messages for a conversation
+        getMessages(username) {
+          return this.conversations.get(username) || [];
+        }
+
+        // Mark conversation as read
+        markAsRead(username) {
+          this.unreadCounts.set(username, 0);
+        }
+
+        // Get unread count for a user
+        getUnreadCount(username) {
+          return this.unreadCounts.get(username) || 0;
+        }
+
+        // Increment unread count for a conversation
+        incrementUnreadCount(username) {
+          const currentCount = this.getUnreadCount(username);
+          this.unreadCounts.set(username, currentCount + 1);
+        }
+
+        // Save scroll position for a conversation
+        saveScrollPosition(username) {
+          if (messagesContainer) {
+            this.scrollPositions.set(username, messagesContainer.scrollTop);
+          }
+        }
+
+        // Get saved scroll position for a conversation
+        getScrollPosition(username) {
+          return this.scrollPositions.get(username) || null;
+        }
+
+        // Clear conversation when user disconnects
+        clearConversation(username) {
+          this.conversations.delete(username);
+          this.unreadCounts.delete(username);
+          this.scrollPositions.delete(username);
+        }
+      }
+
       // Global variables
       let ws = null;
       let displayName = "";
@@ -95,6 +212,7 @@
       let reconnectTimeout = null;
       let connectionAttempts = 0;
       let lastConnectionTime = null;
+      let conversationManager = null; // Will be initialized after displayName is set
 
       // DOM elements
       const displayNameModal = document.getElementById("displayNameModal");
@@ -112,6 +230,7 @@
       const statusIndicator = document.getElementById("statusIndicator");
       const statusText = document.getElementById("statusText");
       const errorDisplay = document.getElementById("errorDisplay");
+      const activeConversationName = document.getElementById("activeConversationName");
 
       // Initialize the application
       document.addEventListener("DOMContentLoaded", function () {
@@ -141,6 +260,37 @@
 
         // Real-time message validation
         messageInput.addEventListener("input", validateMessage);
+
+        // Public chatroom button click handler
+        const publicChatButton = document.getElementById("publicChatButton");
+        if (publicChatButton) {
+          publicChatButton.addEventListener("click", function () {
+            handlePublicChatClick();
+          });
+        }
+      }
+
+      // Handle public chatroom button click
+      function handlePublicChatClick() {
+        if (!conversationManager) return;
+
+        // Switch to public conversation
+        conversationManager.switchConversation(null);
+
+        // Update UI to show public conversation
+        updateActiveConversation(null);
+
+        // Update chat header to show public chatroom
+        updateChatHeader(null);
+
+        // Update message input placeholder
+        updateMessagePlaceholder(null);
+
+        // Clear unread badge for public chat (if any)
+        updateUnreadBadge(null, 0);
+
+        // Load public conversation history
+        loadConversationHistory(null);
       }
 
       // Handle display name form submission
@@ -155,6 +305,9 @@
         displayName = name;
         joinButton.disabled = true;
         joinButton.textContent = "Joining...";
+
+        // Initialize ConversationManager
+        conversationManager = new ConversationManager();
 
         // Hide modal and show chat interface
         displayNameModal.style.display = "none";
@@ -250,12 +403,27 @@
         }
 
         try {
-          const message = {
-            type: "chat",
-            from: displayName,
-            content: sanitizeInput(content),
-            timestamp: new Date().toISOString(),
-          };
+          let message;
+          
+          // Check if we're in a private conversation
+          if (conversationManager && conversationManager.activeConversation !== null) {
+            // Send private message
+            message = {
+              type: "private",
+              from: displayName,
+              to: conversationManager.activeConversation,
+              content: sanitizeInput(content),
+              timestamp: new Date().toISOString(),
+            };
+          } else {
+            // Send public message
+            message = {
+              type: "chat",
+              from: displayName,
+              content: sanitizeInput(content),
+              timestamp: new Date().toISOString(),
+            };
+          }
 
           ws.send(JSON.stringify(message));
           messageInput.value = "";
@@ -431,9 +599,44 @@
           switch (message.type) {
             case "chat":
               if (message.from && message.content) {
-                displayChatMessage(message);
+                // Route through ConversationManager
+                if (conversationManager) {
+                  conversationManager.addMessage(message);
+                  // Only display if in active conversation (public chat)
+                  if (conversationManager.activeConversation === null) {
+                    displayChatMessage(message);
+                  }
+                } else {
+                  displayChatMessage(message);
+                }
               } else {
                 console.warn("Invalid chat message structure:", message);
+              }
+              break;
+            case "private":
+              if (message.from && message.content) {
+                // Route private messages through ConversationManager
+                if (conversationManager) {
+                  conversationManager.addMessage(message);
+                  // Determine the conversation key for this private message
+                  const conversationKey =
+                    message.from === displayName ? message.to : message.from;
+                  // Only display if viewing this conversation
+                  if (
+                    conversationManager.activeConversation === conversationKey
+                  ) {
+                    displayChatMessage(message);
+                  } else {
+                    // Update unread badge if not viewing this conversation
+                    const unreadCount =
+                      conversationManager.getUnreadCount(conversationKey);
+                    updateUnreadBadge(conversationKey, unreadCount);
+                  }
+                } else {
+                  displayChatMessage(message);
+                }
+              } else {
+                console.warn("Invalid private message structure:", message);
               }
               break;
             case "system":
@@ -452,7 +655,8 @@
               break;
             case "error":
               if (message.error) {
-                showError(`Server error: ${message.error}`);
+                // Handle specific private message errors with user-friendly messages
+                handlePrivateMessageError(message.error);
               } else {
                 showError("Unknown server error occurred");
               }
@@ -592,6 +796,61 @@
         updateConnectionStatus("disconnected", "Connection error");
       }
 
+      // Update active conversation highlighting
+      function updateActiveConversation(username) {
+        // Remove active class from all user items
+        const allUserItems = document.querySelectorAll(".user-item");
+        allUserItems.forEach((item) => item.classList.remove("active"));
+
+        // Add active class to the selected conversation
+        if (username === null) {
+          // Public chat
+          const publicChatButton = document.getElementById("publicChatButton");
+          if (publicChatButton) {
+            publicChatButton.classList.add("active");
+          }
+        } else {
+          // Private conversation - find the user item
+          const userItems = document.querySelectorAll(
+            ".user-item:not(.public-chat)"
+          );
+          userItems.forEach((item) => {
+            if (item.dataset.username === username) {
+              item.classList.add("active");
+            }
+          });
+        }
+      }
+
+      // Load conversation history when switching conversations
+      function loadConversationHistory(username) {
+        if (!conversationManager) return;
+
+        // Clear current messages
+        messagesContainer.innerHTML = "";
+
+        // Get messages for this conversation
+        const messages = conversationManager.getMessages(username);
+
+        // Display all messages
+        messages.forEach((message) => {
+          const messageType =
+            message.type === "system" ? "system" : "chat";
+          const messageElement = createMessageElement(message, messageType);
+          messagesContainer.appendChild(messageElement);
+        });
+
+        // Restore scroll position or scroll to bottom
+        const savedScrollPosition = conversationManager.getScrollPosition(username);
+        if (savedScrollPosition !== null) {
+          // Restore saved scroll position
+          messagesContainer.scrollTop = savedScrollPosition;
+        } else {
+          // Scroll to bottom for new conversations
+          scrollToBottom();
+        }
+      }
+
       // Display chat message
       function displayChatMessage(message) {
         const messageElement = createMessageElement(message, "chat");
@@ -609,7 +868,10 @@
       // Create message element
       function createMessageElement(message, type) {
         const messageDiv = document.createElement("div");
-        messageDiv.className = `message ${type}`;
+        
+        // Add private class if this is a private message
+        const isPrivate = message.type === "private";
+        messageDiv.className = `message ${type}${isPrivate ? ' private' : ''}`;
 
         const timestamp = new Date(message.timestamp).toLocaleTimeString();
 
@@ -624,11 +886,14 @@
                     )}</div>
                 `;
         } else {
+          // Add private message indicator if applicable
+          const privateIndicator = isPrivate ? '<span class="private-indicator">🔒 Private</span>' : '';
+          
           messageDiv.innerHTML = `
                     <div class="message-header">
                         <span class="message-from">${escapeHtml(
                           message.from
-                        )}</span>
+                        )}</span>${privateIndicator}
                         <span class="message-timestamp">${timestamp}</span>
                     </div>
                     <div class="message-content">${escapeHtml(
@@ -640,9 +905,31 @@
         return messageDiv;
       }
 
+      // Track previous user list to detect disconnections
+      let previousUserList = [];
+
       // Update users list
       function updateUsersList(users) {
-        usersList.innerHTML = "";
+        // Detect disconnected users
+        const disconnectedUsers = previousUserList.filter(
+          (user) => !users.includes(user)
+        );
+
+        // Handle disconnections
+        disconnectedUsers.forEach((user) => {
+          handleUserDisconnect(user);
+        });
+
+        // Update previous user list
+        previousUserList = [...users];
+
+        // Store the public chat button HTML before clearing
+        const publicChatButton = document.getElementById("publicChatButton");
+        const publicChatHTML = publicChatButton
+          ? publicChatButton.outerHTML
+          : '<div class="user-item public-chat active" id="publicChatButton"><span class="user-name">📢 Public Chatroom</span></div>';
+
+        usersList.innerHTML = publicChatHTML;
         usersCount.textContent = `${users.length} user${
           users.length !== 1 ? "s" : ""
         } online`;
@@ -650,8 +937,330 @@
         users.forEach((user) => {
           const userElement = document.createElement("div");
           userElement.className = "user-item";
-          userElement.textContent = user;
+          userElement.dataset.username = user;
+
+          // Check if this is the current user
+          const isCurrentUser = user === displayName;
+          if (isCurrentUser) {
+            userElement.classList.add("current-user");
+          }
+
+          // Create user name span
+          const userNameSpan = document.createElement("span");
+          userNameSpan.className = "user-name";
+          userNameSpan.textContent = user;
+          userElement.appendChild(userNameSpan);
+
+          // Create unread badge
+          const unreadBadge = document.createElement("span");
+          unreadBadge.className = "unread-badge";
+          unreadBadge.style.display = "none";
+          unreadBadge.textContent = "0";
+          userElement.appendChild(unreadBadge);
+
+          // Create online indicator
+          const onlineIndicator = document.createElement("span");
+          onlineIndicator.className = "online-indicator";
+          userElement.appendChild(onlineIndicator);
+
+          // Add click event listener
+          userElement.addEventListener("click", function () {
+            handleUserClick(user);
+          });
+
           usersList.appendChild(userElement);
+        });
+
+        // Re-attach public chat button click handler
+        const newPublicChatButton = document.getElementById("publicChatButton");
+        if (newPublicChatButton) {
+          newPublicChatButton.addEventListener("click", function () {
+            handlePublicChatClick();
+          });
+        }
+
+        // Update UI if viewing conversation with reconnected user
+        if (conversationManager && conversationManager.activeConversation !== null) {
+          const activeUser = conversationManager.activeConversation;
+          if (users.includes(activeUser)) {
+            // User is online - ensure message input is enabled
+            handleUserReconnect(activeUser);
+          }
+        }
+      }
+
+      // Handle user disconnect
+      function handleUserDisconnect(username) {
+        if (!conversationManager) return;
+
+        // Check if we're viewing a conversation with the disconnected user
+        if (conversationManager.activeConversation === username) {
+          // Display system message about user going offline
+          const systemMessage = {
+            type: "system",
+            content: `${username} has gone offline`,
+            timestamp: new Date().toISOString(),
+          };
+          displaySystemMessage(systemMessage);
+
+          // Disable message input
+          messageInput.disabled = true;
+          sendButton.disabled = true;
+          messageInput.placeholder = `${username} is offline`;
+
+          // Add visual indicator in chat header
+          updateChatHeaderOffline(username);
+
+          // Automatically switch to public chat
+          setTimeout(() => {
+            switchToPublicAfterDisconnect(username);
+          }, 2000); // Wait 2 seconds before auto-switching
+        }
+
+        // Clear conversation history for disconnected user
+        conversationManager.clearConversation(username);
+
+        // Remove unread badges for disconnected user
+        updateUnreadBadge(username, 0);
+      }
+
+      // Handle user reconnect
+      function handleUserReconnect(username) {
+        if (!conversationManager) return;
+
+        // Check if we're viewing a conversation with the reconnected user
+        if (conversationManager.activeConversation === username) {
+          // Re-enable message input if connected
+          if (isConnected) {
+            messageInput.disabled = false;
+            validateMessage();
+            messageInput.placeholder = `Message ${username}...`;
+          }
+
+          // Update chat header to remove offline indicator
+          updateChatHeader(username);
+
+          // Display system message about user reconnecting
+          const systemMessage = {
+            type: "system",
+            content: `${username} is back online`,
+            timestamp: new Date().toISOString(),
+          };
+          displaySystemMessage(systemMessage);
+        }
+      }
+
+      // Switch to public chat after user disconnect
+      function switchToPublicAfterDisconnect(username) {
+        if (!conversationManager) return;
+
+        // Only switch if still viewing the disconnected user's conversation
+        if (conversationManager.activeConversation === username) {
+          // Show notification about automatic switch
+          const systemMessage = {
+            type: "system",
+            content: `Switched to public chatroom because ${username} disconnected`,
+            timestamp: new Date().toISOString(),
+          };
+
+          // Switch to public conversation
+          conversationManager.switchConversation(null);
+
+          // Update UI to show public conversation
+          updateActiveConversation(null);
+
+          // Update chat header to show public chatroom
+          updateChatHeader(null);
+
+          // Update message input placeholder
+          updateMessagePlaceholder(null);
+
+          // Load public conversation history
+          loadConversationHistory(null);
+
+          // Display the notification in public chat
+          displaySystemMessage(systemMessage);
+
+          // Re-enable message input if connected
+          if (isConnected) {
+            messageInput.disabled = false;
+            validateMessage();
+          }
+        }
+      }
+
+      // Update chat header to show offline status
+      function updateChatHeaderOffline(username) {
+        if (activeConversationName) {
+          activeConversationName.innerHTML = `Private chat with ${escapeHtml(username)} <span style="color: #ff4444; font-size: 14px;">● Offline</span>`;
+        }
+      }
+
+      // Handle user click for private messaging
+      function handleUserClick(username) {
+        if (!conversationManager) return;
+
+        // Prevent clicking on current user's own name
+        if (username === displayName) {
+          showError("You cannot send messages to yourself");
+          return;
+        }
+
+        // Switch to private conversation
+        conversationManager.switchConversation(username);
+
+        // Update UI to show private conversation
+        updateActiveConversation(username);
+
+        // Update chat header to show private conversation
+        updateChatHeader(username);
+
+        // Update message input placeholder
+        updateMessagePlaceholder(username);
+
+        // Clear unread badge for this user
+        updateUnreadBadge(username, 0);
+
+        // Load private conversation history
+        loadConversationHistory(username);
+      }
+
+      // Handle private message errors with user-friendly messages
+      function handlePrivateMessageError(errorMessage) {
+        // Normalize error message to lowercase for easier matching
+        const errorLower = errorMessage.toLowerCase();
+
+        // Handle "recipient not found" errors
+        if (errorLower.includes("recipient not found") || 
+            errorLower.includes("recipient") && errorLower.includes("offline")) {
+          // Extract recipient name if possible
+          const recipientMatch = errorMessage.match(/to\s+(\w+)/i);
+          const recipient = recipientMatch ? recipientMatch[1] : "recipient";
+          
+          showError(`Unable to send message: ${recipient} is not online or has disconnected`);
+          
+          // If viewing conversation with offline user, show additional context
+          if (conversationManager && conversationManager.activeConversation) {
+            const activeUser = conversationManager.activeConversation;
+            if (errorLower.includes(activeUser.toLowerCase())) {
+              // Display system message in chat
+              const systemMessage = {
+                type: "system",
+                content: `${activeUser} is offline and cannot receive messages`,
+                timestamp: new Date().toISOString(),
+              };
+              displaySystemMessage(systemMessage);
+            }
+          }
+          return;
+        }
+
+        // Handle "user offline" errors
+        if (errorLower.includes("user") && errorLower.includes("offline")) {
+          showError("Cannot send message: User is offline");
+          return;
+        }
+
+        // Handle "cannot message yourself" errors
+        if (errorLower.includes("yourself") || 
+            errorLower.includes("cannot send") && errorLower.includes("to yourself")) {
+          showError("You cannot send private messages to yourself");
+          return;
+        }
+
+        // Handle rate limit errors
+        if (errorLower.includes("rate limit")) {
+          showError("You're sending messages too quickly. Please slow down.");
+          return;
+        }
+
+        // Handle validation errors
+        if (errorLower.includes("validation")) {
+          showError("Message validation failed. Please check your message and try again.");
+          return;
+        }
+
+        // Handle server busy errors
+        if (errorLower.includes("server busy") || errorLower.includes("channel full")) {
+          showError("Server is busy. Please try again in a moment.");
+          return;
+        }
+
+        // Handle authentication errors
+        if (errorLower.includes("must join") || errorLower.includes("authentication")) {
+          showError("You must join the chat before sending messages");
+          return;
+        }
+
+        // Default error handling for unrecognized errors
+        showError(`Server error: ${errorMessage}`);
+      }
+
+      // Update unread badge for a user
+      function updateUnreadBadge(username, count) {
+        if (!username) return; // No badge for public chat
+
+        const userItems = document.querySelectorAll(
+          ".user-item:not(.public-chat)"
+        );
+        userItems.forEach((item) => {
+          if (item.dataset.username === username) {
+            const badge = item.querySelector(".unread-badge");
+            if (badge) {
+              if (count > 0) {
+                badge.textContent = count;
+                badge.style.display = "inline-block";
+              } else {
+                badge.style.display = "none";
+              }
+            }
+          }
+        });
+      }
+
+      // Update chat header to show active conversation name
+      function updateChatHeader(username) {
+        if (activeConversationName) {
+          if (username === null) {
+            activeConversationName.textContent = "Public Chatroom";
+          } else {
+            activeConversationName.textContent = `Private chat with ${username}`;
+          }
+        }
+      }
+
+      // Update message input placeholder text
+      function updateMessagePlaceholder(username) {
+        if (messageInput) {
+          if (username === null) {
+            messageInput.placeholder = "Type your message...";
+          } else {
+            messageInput.placeholder = `Message ${username}...`;
+          }
+        }
+      }
+
+      // Update all unread badges from ConversationManager
+      function updateAllUnreadBadges() {
+        if (!conversationManager) return;
+
+        const userItems = document.querySelectorAll(
+          ".user-item:not(.public-chat)"
+        );
+        userItems.forEach((item) => {
+          const username = item.dataset.username;
+          if (username) {
+            const count = conversationManager.getUnreadCount(username);
+            const badge = item.querySelector(".unread-badge");
+            if (badge) {
+              if (count > 0) {
+                badge.textContent = count;
+                badge.style.display = "inline-block";
+              } else {
+                badge.style.display = "none";
+              }
+            }
+          }
         });
       }
 

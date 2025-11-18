@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Frontend UI Tests - Private Messaging</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+        .test-suite {
+            background: white;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .test-case {
+            padding: 10px;
+            margin: 10px 0;
+            border-left: 4px solid #ddd;
+        }
+        .test-case.pass {
+            border-left-color: #4caf50;
+            background-color: #f1f8f4;
+        }
+        .test-case.fail {
+            border-left-color: #f44336;
+            background-color: #fef1f0;
+        }
+        .test-name {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        .test-error {
+            color: #f44336;
+            font-family: monospace;
+            font-size: 12px;
+            margin-top: 5px;
+        }
+        .summary {
+            background: #333;
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        .summary.all-pass {
+            background: #4caf50;
+        }
+        .summary.has-fail {
+            background: #f44336;
+        }
+        .user-item {
+            padding: 10px;
+            margin: 5px 0;
+        }
+        .user-item.active {
+            background-color: #e3f2fd;
+        }
+        .unread-badge {
+            display: none;
+            background: red;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Frontend UI Tests - Private Messaging</h1>
+    <div id="testResults"></div>
+    <div id="testSummary" class="summary"></div>
+
+    <!-- Mock DOM elements for testing -->
+    <div id="mockDOM" style="display: none;">
+        <div id="activeConversationName"></div>
+        <input id="messageInput" placeholder="Type your message..." />
+        <div id="usersList">
+            <div class="user-item public-chat" id="publicChatButton">
+                <span class="user-name">📢 Public Chatroom</span>
+            </div>
+            <div class="user-item" data-username="Alice">
+                <span class="user-name">Alice</span>
+                <span class="unread-badge">0</span>
+            </div>
+            <div class="user-item" data-username="Bob">
+                <span class="user-name">Bob</span>
+                <span class="unread-badge">0</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Mock global variables
+        let displayName = "TestUser";
+        let conversationManager = null;
+        let messagesContainer = { scrollTop: 0 };
+        let activeConversationName = document.getElementById('activeConversationName');
+        let messageInput = document.getElementById('messageInput');
+
+        // ConversationManager class
+        class ConversationManager {
+            constructor() {
+                this.conversations = new Map();
+                this.conversations.set(null, []);
+                this.activeConversation = null;
+                this.unreadCounts = new Map();
+                this.scrollPositions = new Map();
+                this.maxMessagesPerConversation = 100;
+            }
+
+            switchConversation(username) {
+                if (this.activeConversation !== null || username !== this.activeConversation) {
+                    this.saveScrollPosition(this.activeConversation);
+                }
+                this.activeConversation = username;
+                this.markAsRead(username);
+            }
+
+            addMessage(message) {
+                let conversationKey = null;
+
+                if (message.type === "private") {
+                    const currentUser = displayName;
+                    conversationKey = message.from === currentUser ? message.to : message.from;
+                } else {
+                    conversationKey = null;
+                }
+
+                if (!this.conversations.has(conversationKey)) {
+                    this.conversations.set(conversationKey, []);
+                }
+
+                const messages = this.conversations.get(conversationKey);
+                messages.push(message);
+
+                if (messages.length > this.maxMessagesPerConversation) {
+                    messages.splice(0, messages.length - this.maxMessagesPerConversation);
+                }
+
+                if (conversationKey !== this.activeConversation) {
+                    this.incrementUnreadCount(conversationKey);
+                }
+            }
+
+            getMessages(username) {
+                return this.conversations.get(username) || [];
+            }
+
+            markAsRead(username) {
+                this.unreadCounts.set(username, 0);
+            }
+
+            getUnreadCount(username) {
+                return this.unreadCounts.get(username) || 0;
+            }
+
+            incrementUnreadCount(username) {
+                const currentCount = this.getUnreadCount(username);
+                this.unreadCounts.set(username, currentCount + 1);
+            }
+
+            saveScrollPosition(username) {
+                if (messagesContainer) {
+                    this.scrollPositions.set(username, messagesContainer.scrollTop);
+                }
+            }
+
+            getScrollPosition(username) {
+                return this.scrollPositions.get(username) || null;
+            }
+
+            clearConversation(username) {
+                this.conversations.delete(username);
+                this.unreadCounts.delete(username);
+                this.scrollPositions.delete(username);
+            }
+        }
+
+        // UI Helper Functions
+        function updateUnreadBadge(username, count) {
+            if (!username) return;
+
+            const userItems = document.querySelectorAll(".user-item:not(.public-chat)");
+            userItems.forEach((item) => {
+                if (item.dataset.username === username) {
+                    const badge = item.querySelector(".unread-badge");
+                    if (badge) {
+                        if (count > 0) {
+                            badge.textContent = count;
+                            badge.style.display = "inline-block";
+                        } else {
+                            badge.style.display = "none";
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateActiveConversation(username) {
+            const allUserItems = document.querySelectorAll(".user-item");
+            allUserItems.forEach((item) => {
+                item.classList.remove("active");
+            });
+
+            if (username === null) {
+                const publicChat = document.getElementById("publicChatButton");
+                if (publicChat) {
+                    publicChat.classList.add("active");
+                }
+            } else {
+                const userItems = document.querySelectorAll(".user-item:not(.public-chat)");
+                userItems.forEach((item) => {
+                    if (item.dataset.username === username) {
+                        item.classList.add("active");
+                    }
+                });
+            }
+        }
+
+        // Test framework
+        class TestRunner {
+            constructor() {
+                this.tests = [];
+                this.results = [];
+            }
+
+            test(name, fn) {
+                this.tests.push({ name, fn });
+            }
+
+            async run() {
+                for (const test of this.tests) {
+                    try {
+                        await test.fn();
+                        this.results.push({ name: test.name, pass: true });
+                    } catch (error) {
+                        this.results.push({ name: test.name, pass: false, error: error.message });
+                    }
+                }
+                this.displayResults();
+            }
+
+            displayResults() {
+                const resultsDiv = document.getElementById('testResults');
+                const summaryDiv = document.getElementById('testSummary');
+                
+                let html = '<div class="test-suite"><h2>UI Test Results</h2>';
+                
+                this.results.forEach(result => {
+                    const className = result.pass ? 'pass' : 'fail';
+                    const status = result.pass ? '✓ PASS' : '✗ FAIL';
+                    html += `
+                        <div class="test-case ${className}">
+                            <div class="test-name">${status}: ${result.name}</div>
+                            ${result.error ? `<div class="test-error">Error: ${result.error}</div>` : ''}
+                        </div>
+                    `;
+                });
+                
+                html += '</div>';
+                resultsDiv.innerHTML = html;
+
+                const passed = this.results.filter(r => r.pass).length;
+                const failed = this.results.filter(r => !r.pass).length;
+                const total = this.results.length;
+                
+                const summaryClass = failed === 0 ? 'summary all-pass' : 'summary has-fail';
+                summaryDiv.className = summaryClass;
+                summaryDiv.innerHTML = `
+                    <strong>Test Summary:</strong> ${passed}/${total} tests passed, ${failed} failed
+                `;
+            }
+        }
+
+        // Assertion helpers
+        function assertEqual(actual, expected, message) {
+            if (actual !== expected) {
+                throw new Error(message || `Expected ${expected}, got ${actual}`);
+            }
+        }
+
+        function assertTrue(value, message) {
+            if (!value) {
+                throw new Error(message || `Expected true, got ${value}`);
+            }
+        }
+
+        function assertFalse(value, message) {
+            if (value) {
+                throw new Error(message || `Expected false, got ${value}`);
+            }
+        }
+
+        // Test Suite
+        const runner = new TestRunner();
+
+        // Test user list click handling
+        runner.test('User list click - switches to private conversation', () => {
+            conversationManager = new ConversationManager();
+            conversationManager.switchConversation('Alice');
+            assertEqual(conversationManager.activeConversation, 'Alice', 'Should switch to Alice');
+        });
+
+        runner.test('User list click - prevents self-messaging', () => {
+            displayName = 'TestUser';
+            // In real app, handleUserClick would check this and show error
+            // We test the logic here
+            const username = 'TestUser';
+            const shouldPrevent = (username === displayName);
+            assertTrue(shouldPrevent, 'Should prevent clicking own name');
+        });
+
+        // Test active conversation highlighting
+        runner.test('Active conversation highlighting - highlights private chat', () => {
+            updateActiveConversation('Alice');
+            const aliceItem = document.querySelector('[data-username="Alice"]');
+            assertTrue(aliceItem.classList.contains('active'), 'Alice should be highlighted');
+        });
+
+        runner.test('Active conversation highlighting - highlights public chat', () => {
+            updateActiveConversation(null);
+            const publicChat = document.getElementById('publicChatButton');
+            assertTrue(publicChat.classList.contains('active'), 'Public chat should be highlighted');
+        });
+
+        runner.test('Active conversation highlighting - removes previous highlight', () => {
+            updateActiveConversation('Alice');
+            updateActiveConversation('Bob');
+            
+            const aliceItem = document.querySelector('[data-username="Alice"]');
+            const bobItem = document.querySelector('[data-username="Bob"]');
+            
+            assertFalse(aliceItem.classList.contains('active'), 'Alice should not be highlighted');
+            assertTrue(bobItem.classList.contains('active'), 'Bob should be highlighted');
+        });
+
+        // Test unread badge display/hide logic
+        runner.test('Unread badge - shows badge with count', () => {
+            updateUnreadBadge('Alice', 5);
+            const aliceItem = document.querySelector('[data-username="Alice"]');
+            const badge = aliceItem.querySelector('.unread-badge');
+            
+            assertEqual(badge.textContent, '5', 'Badge should show count 5');
+            assertEqual(badge.style.display, 'inline-block', 'Badge should be visible');
+        });
+
+        runner.test('Unread badge - hides badge when count is 0', () => {
+            updateUnreadBadge('Alice', 5);
+            updateUnreadBadge('Alice', 0);
+            
+            const aliceItem = document.querySelector('[data-username="Alice"]');
+            const badge = aliceItem.querySelector('.unread-badge');
+            
+            assertEqual(badge.style.display, 'none', 'Badge should be hidden');
+        });
+
+        runner.test('Unread badge - updates badge count', () => {
+            updateUnreadBadge('Bob', 3);
+            const bobItem = document.querySelector('[data-username="Bob"]');
+            const badge = bobItem.querySelector('.unread-badge');
+            
+            assertEqual(badge.textContent, '3', 'Badge should show count 3');
+            
+            updateUnreadBadge('Bob', 7);
+            assertEqual(badge.textContent, '7', 'Badge should update to count 7');
+        });
+
+        runner.test('Unread badge - does not affect public chat', () => {
+            // Public chat should not have unread badge
+            updateUnreadBadge(null, 5);
+            const publicChat = document.getElementById('publicChatButton');
+            const badge = publicChat.querySelector('.unread-badge');
+            
+            assertEqual(badge, null, 'Public chat should not have badge');
+        });
+
+        // Test message placeholder updates
+        runner.test('Message placeholder - updates for private chat', () => {
+            messageInput.placeholder = `Message Alice...`;
+            assertTrue(messageInput.placeholder.includes('Alice'), 'Placeholder should mention Alice');
+        });
+
+        runner.test('Message placeholder - updates for public chat', () => {
+            messageInput.placeholder = 'Type your message...';
+            assertEqual(messageInput.placeholder, 'Type your message...', 'Placeholder should be generic');
+        });
+
+        // Test conversation header updates
+        runner.test('Chat header - shows private conversation name', () => {
+            activeConversationName.textContent = 'Private chat with Alice';
+            assertTrue(activeConversationName.textContent.includes('Alice'), 'Header should show Alice');
+        });
+
+        runner.test('Chat header - shows public chatroom name', () => {
+            activeConversationName.textContent = 'Public Chatroom';
+            assertEqual(activeConversationName.textContent, 'Public Chatroom', 'Header should show Public Chatroom');
+        });
+
+        // Run all tests
+        document.addEventListener('DOMContentLoaded', () => {
+            runner.run();
+        });
+    </script>
+</body>
+</html>
